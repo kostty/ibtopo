@@ -9,35 +9,59 @@ Todo:
   * Configurable levels of ISLs
 """
 
-import hostlist as hl
 import os.path
 import argparse
+import subprocess
 import re
+import hostlist 
 import json
 
 switches = {}
 hosts = []
 
 script_name = os.path.basename(__file__)
+ibnetdiscover_cmd = '/usr/sbin/ibnetdiscover'
+ibnetdiscover_args = ''
 
-parser = argparse.ArgumentParser(description = '{} parses ibnetdiscover output\
-         to generate a Slurm topology file and extract some other useful\
-         information'.format(script_name))
-parser.add_argument('input_file', help='A file containing the output of \
-                                        ibnetdiscover')
-parser.add_argument('-d', '--dump', help='Dump the internal structure in JSON',
-                    action = 'store_true')
+parser = argparse.ArgumentParser(description = '''{} parses ibnetdiscover
+         output to generate a Slurm topology file and extract some other useful
+         information'''.format(script_name))
+parser.add_argument('-f', '--input-file',
+                    help='A file containing an output of ibnetdiscover')
+parser.add_argument('-d', '--dump', action='store_true',
+                    help='Dump the internal structure in JSON')
+parser.add_argument('-I', '--ibnetdiscover-path',
+                    help='The full path to the `ibnetdiscover` program')
+parser.add_argument('-A', '--ibnetdiscover-args',
+                    help='''Additional arguments to be passed to the
+                                             `ibnetdiscover` program''')
 
 args = parser.parse_args()
 args = vars(args)
 
 input_file = args['input_file']
 
-try:
-    f = open(input_file, 'r')
-except IOError as e:
-    print('Error: {}: "{}"'.format(e.strerror, input_file))
-    exit(2)
+if args['ibnetdiscover_path']:
+    ibnetdiscover_cmd = args['ibnetdiscover_path']
+
+if input_file:
+    try:
+        f = open(input_file, 'r')
+    except IOError as e:
+        print('Error: {}: "{}"'.format(e.strerror, input_file))
+        exit(2)
+else:
+    try:
+        f = subprocess.check_output(ibnetdiscover_cmd, stderr=subprocess.STDOUT)
+        f = f.split('\n')
+    except OSError as e:
+        if e.errno == 2:
+            print('Error: {} couldn\'t be found'.format(ibnetdiscover_cmd))
+            exit(3)
+    except subprocess.CalledProcessError as e:
+        print(e.args)
+        print('{} returned the following error:\n\n{}'.format(e.cmd, e.output))
+        exit(4)
 
 in_switch = False
 for line in f:
@@ -80,8 +104,8 @@ else:
         switch = '{}{}'.format(prefix, num2guid[guid])
         nodes = [ x['name'] for x in info['hosts'] ]
         num_nodes = len(nodes)
-        nodes = hl.collect_hostlist(nodes)
+        nodes = hostlist.collect_hostlist(nodes)
         isl = [ '{}{}'.format(prefix, num2guid[x]) for x in info['switches']]
-        isl = hl.collect_hostlist(isl)
+        isl = hostlist.collect_hostlist(isl)
         print('SwitchName={} Nodes={} Switches={}    # Free ports: {}'
                .format(switch, nodes, isl, info['ports'] - num_nodes))
