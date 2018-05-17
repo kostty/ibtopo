@@ -17,11 +17,26 @@ import hostlist
 import json
 from fractions import Fraction
 
+def assign_tiers(switches):
+    start_tier = [switch for switch in switches if len(switches[switch]['hosts'])]
+    next_tier, next_tier_num = set_tier(switches, start_tier)
+    while next_tier:
+	next_tier, next_num = set_tier(switches, next_tier, next_tier_num)
+
+def set_tier(switches, tier, tier_num = 1):
+    for switch in tier:
+	switches[switch]['tier'] = tier_num
+    next_tier = [switch for switch in switches if not 'tier' in switches[switch]]
+
+    return next_tier, tier_num+1
+
 switches = {}
-hosts = []
+#hosts = []
 
 script_name = os.path.basename(__file__)
+tier_names = [['Switch'], ['Edge, Core'], ['Edge', 'Leaf', 'Spine']]
 ibnetdiscover_cmd = '/usr/sbin/ibnetdiscover'
+#ibnetdiscover_cmd = '/home/kku/ibtopo/ibnetdiscover'
 ibnetdiscover_args = ''
 
 parser = argparse.ArgumentParser(description = '''`{}` parses `ibnetdiscover`
@@ -40,6 +55,8 @@ parser.add_argument('-A', '--ibnetdiscover-args',
           `ibnetdiscover` program (needs to be quoted, e.g. -A"--help"''')
 parser.add_argument('-P', '--prefix', default = 'Switch',
                     help='Prefix to use when generating switch names')
+parser.add_argument('-O', '--omni-path', action='store_true',
+                    help='The fabric is based on Intel\'s Omni-Path')
 args = parser.parse_args()
 args = vars(args)
 
@@ -117,7 +134,6 @@ else:
     num2guid = {}
     output = [[], []]
     out_len = 0
-    #prefix = 'Switch'
     for i, guid in enumerate(switches):
         num2guid[guid] = i+1
     for guid, info in switches.items():
@@ -132,7 +148,6 @@ else:
                                        num2guid[x]) for x in info['switches']]
             isl = hostlist.collect_hostlist(isl)
             out_str += ' Switches={}'.format(isl)
-        #print('ports: {}, isl: {}, nodes: {}'.format(info['ports'], sw_links, n_links))
         b_factor = Fraction(info['ports'] - sw_links, sw_links)
         comment = '# Free ports: {},'.format(info['ports'] -
                                                          (n_links + sw_links))
@@ -141,6 +156,9 @@ else:
 	out_len = max(len(out_str), out_len)
 	output[0].append(out_str)
 	output[1].append(comment)
-     
+
     output = ['{:<{}} {}'.format(out_str, out_len, comment) for out_str, comment in zip(output[0], output[1])]
     print('\n'.join(output))
+
+    assign_tiers(switches)
+    print(json.dumps(switches, indent=4))
