@@ -103,6 +103,7 @@ if omnipath:
             parent_guid = sys['SystemImageGUID']
             switches[parent_guid] = {
                 'ports': 0,
+                'parent': None,
                 'director': True,
                 'hosts': {},
                 'switches': {},
@@ -119,12 +120,16 @@ if omnipath:
                     'hosts': {},
                     'switches': {},
                     }
-                switches[parent_guid]['ports'] += ports
+                if names[1].startswith('L'):
+                    # Below, 16 is an assumption based on the current
+                    # Intel's director models. Couldn't derive it from
+                    # the XML.
+                    switches[parent_guid]['ports'] += 16
                 switches[parent_guid]['name'] = names[0]
         elif sys['Node']['NodeType_Int'] == "2":
             guid = sys['Node']['NodeGUID']
             name = sys['Node']['NodeDesc']
-            ports = sys['Node']['NumPorts']
+            ports = int(sys['Node']['NumPorts'])
             switches[guid] = {
                 'name': name,
                 'ports': ports,
@@ -219,9 +224,12 @@ else:
     num2guid = {}
     output = [[], []]
     out_len = 0
+    switches = {k: v for k, v in switches.items() if not v['parent']}
     for i, guid in enumerate(switches):
         num2guid[guid] = i+1
     for guid, info in switches.items():
+        if info['parent']:
+            continue
         switch = '{}{}'.format(prefix, num2guid[guid])
         nodes = [ n['name'] for n in info['hosts'].values() ]
         n_links = sum([n['links'] for n in info['hosts'].values()])
@@ -233,10 +241,11 @@ else:
                                        num2guid[x]) for x in info['switches']]
             isl = hostlist.collect_hostlist(isl)
             out_str += ' Switches={}'.format(isl)
-        comment = '# Free ports: {},'.format(info['ports'] -
-                                                         (n_links + sw_links))
-        b_factor = Fraction(info['ports'] - sw_links, sw_links)
-        comment += '\tblocking-factor: {}:{}'.format(b_factor.numerator,
+        comment = '# Free ports: {}'.format(info['ports'] - 
+                                            (n_links + sw_links))
+        if n_links:
+            b_factor = Fraction(info['ports'] - sw_links, sw_links)
+            comment += ',\tblocking-factor: {}:{}'.format(b_factor.numerator,
                                                          b_factor.denominator)
 	out_len = max(len(out_str), out_len)
 	output[0].append(out_str)
