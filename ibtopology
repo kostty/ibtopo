@@ -15,6 +15,7 @@ import subprocess
 import re
 import hostlist
 import json
+import xmltodict
 from fractions import Fraction
 
 def assign_tiers(switches):
@@ -42,18 +43,18 @@ ibnetdiscover_args = ''
 parser = argparse.ArgumentParser(description = '''`{}` parses `ibnetdiscover`
          output to generate a Slurm topology file and extract some other useful
          information'''.format(script_name))
-parser.add_argument('-f', '--input-file',
+parser.add_argument('-f', '--input-file', metavar='PATH',
                     help='A file containing an output of `ibnetdiscover`')
 parser.add_argument('-d', '--dump', action='store_true',
                     help='Dump the internal structure in JSON')
 parser.add_argument('-n', '--nodes-only', action='store_true',
                     help='Only list connected nodes, not switches')
-parser.add_argument('-I', '--ibnetdiscover-path',
+parser.add_argument('-I', '--ibnetdiscover-path', metavar='PATH',
                     help='The full path to the `ibnetdiscover` program')
-parser.add_argument('-A', '--ibnetdiscover-args',
+parser.add_argument('-A', '--ibnetdiscover-args', metavar='ARGS',
                     help='''Additional arguments to be passed to the
           `ibnetdiscover` program (needs to be quoted, e.g. -A"--help"''')
-parser.add_argument('-P', '--prefix', default = 'Switch',
+parser.add_argument('-P', '--prefix', default='Switch',
                     help='Prefix to use when generating switch names')
 parser.add_argument('-O', '--omni-path', action='store_true',
                     help='The fabric is based on Intel\'s Omni-Path')
@@ -63,6 +64,7 @@ args = vars(args)
 input_file = args['input_file']
 prefix = args['prefix']
 nodes_only = args['nodes_only']
+omnipath = args['omni_path']
 
 if args['ibnetdiscover_path']:
     ibnetdiscover_cmd = args['ibnetdiscover_path']
@@ -92,44 +94,127 @@ else:
         print('The error message was as follows:\n\n {}'.format(e.output))
         exit(4)
 
-in_switch = False
-for line in f:
-    line = line.rstrip()
-    if re.match('Switch.*', line):
-        parts = line.split('"',4)
-        guid, name = parts[1], parts[3]
-        lid = re.search('.* lid (\d+) .*', parts[4]).group(1)
-        ports = int(re.split('\s+', parts[0])[1])
-        switches[guid] = {'name': name, 'lid': lid, 'ports': ports,
-                          'hosts': {}, 'switches': {}}
-        in_switch = guid
-    elif re.match('\[.*', line):
-        if not in_switch:
+if omnipath:
+    report = xmltodict.parse(f)['Report']
+    systems = report['ComponentSummary']['Systems']['System']
+    links = report['LinkSummary']['Link']
+    for sys in systems:
+        if int(sys['ConnectedNodes']) > 1:
+            parent_guid = sys['SystemImageGUID']
+            switches[parent_guid] = {
+                'ports': 0,
+                'director': True,
+                'hosts': {},
+                'switches': {},
+                }
+            for node in sys['Node']:
+                guid = node['NodeGUID']
+                names = node['NodeDesc'].split()
+                ports = int(node['NumPorts'])
+                switches[guid] = {
+                    'name': names[1],
+                    'ports': ports,
+                    'parent': parent_guid,
+                    'director': False,
+                    'hosts': {},
+                    'switches': {},
+                    }
+                switches[parent_guid]['ports'] += ports
+                switches[parent_guid]['name'] = names[0]
+        elif sys['Node']['NodeType_Int'] == "2":
+            guid = sys['Node']['NodeGUID']
+            name = sys['Node']['NodeDesc']
+            ports = sys['Node']['NumPorts']
+            switches[guid] = {
+                'name': name,
+                'ports': ports,
+                'parent': None,
+                'director': False,
+                'hosts': {},
+                'switches': {},
+                }
+
+    #json.dumps(switches, indent=4)
+    for link in links:
+        if int(link['Internal']):
             continue
-        switch = switches[in_switch]
-        parts = line.split('"',4)
-        guid = parts[1]
-        name = parts[3]
-        lid = re.search('.* lid (\d+) .*', parts[4]).group(1)
-        remote_port = parts[2].strip(' #[]')
-        if re.match('H-', guid):
-            name = name.split(' ')
-            hca, name = name[1], name[0]
-            if guid in switch['hosts']:
-                switch['hosts'][guid]['links'] += 1
+        sw_guids = []
+        for port in link['Port']:
+            if port['NodeType_Int'] == '1':
+                host_guid = port['NodeGUID']
+                names = port['NodeDesc'].split()
+                host = {
+                    'name': names[0],
+                    'hca': names[1],
+                    'links': 1,
+                    }
             else:
-                switch['hosts'][guid] = {'links': 1, 'lid': lid, 'name': name,
-                                                                   'hca': hca}
-        elif re.match('S-', guid):
-            if guid in switch['switches']:
-                switch['switches'][guid]['links'] += 1
+                guid = port['NodeGUID']
+                if switches[guid]['parent']:
+                    sw_guids.append(switches[guid]['parent'])
+                else:
+                    sw_guids.append(guid)
+        if len(sw_guids) == 1:
+            switch = switches[sw_guids[0]]
+            if host_guid in switch['hosts']:
+                switch['hosts'][host_guid]['links'] += 1
             else:
-                switch['switches'][guid] = {'links': 1}
-    else:
-        in_switch = False
+                switch['hosts'][host_guid] = host
+        else:
+            switchA = switches[sw_guids[0]]
+            switchB = switches[sw_guids[1]]
+            if sw_guids[0] in switchB['switches']:
+                switchB['switches'][sw_guids[0]]['links'] += 1
+            else:
+                switchB['switches'][sw_guids[0]] = {'links': 1}
+            if sw_guids[1] in switchA['switches']:
+                switchA['switches'][sw_guids[1]]['links'] += 1
+            else:
+                switchA['switches'][sw_guids[1]] = {'links': 1}
+
+#    switches = report
+
+else:
+    in_switch = False
+    for line in f:
+        line = line.rstrip()
+        if re.match('Switch.*', line):
+            parts = line.split('"',4)
+            guid, name = parts[1], parts[3]
+            lid = re.search('.* lid (\d+) .*', parts[4]).group(1)
+            ports = int(re.split('\s+', parts[0])[1])
+            switches[guid] = {'name': name, 'lid': lid, 'ports': ports,
+                              'hosts': {}, 'switches': {}}
+            in_switch = guid
+        elif re.match('\[.*', line):
+            if not in_switch:
+                continue
+            switch = switches[in_switch]
+            parts = line.split('"',4)
+            guid = parts[1]
+            name = parts[3]
+            lid = re.search('.* lid (\d+) .*', parts[4]).group(1)
+            remote_port = parts[2].strip(' #[]')
+            if re.match('H-', guid):
+                name = name.split(' ')
+                hca, name = name[1], name[0]
+                if guid in switch['hosts']:
+                    switch['hosts'][guid]['links'] += 1
+                else:
+                    switch['hosts'][guid] = {'links': 1, 'lid': lid, 'name': name,
+                                                                       'hca': hca}
+            elif re.match('S-', guid):
+                if guid in switch['switches']:
+                    switch['switches'][guid]['links'] += 1
+                else:
+                    switch['switches'][guid] = {'links': 1}
+        else:
+            in_switch = False
+
+#assign_tiers(switches)
 
 if args['dump']:
-    print json.dumps(switches, indent=4)
+    print(json.dumps(switches, indent=4))
 else:
     num2guid = {}
     output = [[], []]
@@ -148,9 +233,9 @@ else:
                                        num2guid[x]) for x in info['switches']]
             isl = hostlist.collect_hostlist(isl)
             out_str += ' Switches={}'.format(isl)
-        b_factor = Fraction(info['ports'] - sw_links, sw_links)
         comment = '# Free ports: {},'.format(info['ports'] -
                                                          (n_links + sw_links))
+        b_factor = Fraction(info['ports'] - sw_links, sw_links)
         comment += '\tblocking-factor: {}:{}'.format(b_factor.numerator,
                                                          b_factor.denominator)
 	out_len = max(len(out_str), out_len)
@@ -160,5 +245,3 @@ else:
     output = ['{:<{}} {}'.format(out_str, out_len, comment) for out_str, comment in zip(output[0], output[1])]
     print('\n'.join(output))
 
-    assign_tiers(switches)
-    print(json.dumps(switches, indent=4))
