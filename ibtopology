@@ -18,26 +18,41 @@ import json
 import xmltodict
 from fractions import Fraction
 
+class Fabric():
+
+    tier_labels = ['', 'Switch', ('Edge', 'Core'), ('Edge', 'Leaf', 'Spine')]
+
+    def __init__(self):
+        self.switches = {}
+        self.tiers = {}
+        self.num_tiers=0
+
+    @property
+    def tier_names(self):
+        return tier_labels[self.num_tiers]
+
+
 def assign_tiers(switches):
     start_tier = [switch for switch in switches if len(switches[switch]['hosts'])]
     next_tier, next_tier_num = set_tier(switches, start_tier)
     while next_tier:
-	next_tier, next_num = set_tier(switches, next_tier, next_tier_num)
+        next_tier, next_num = set_tier(switches, next_tier, next_tier_num)
+
+    return next_num-1
 
 def set_tier(switches, tier, tier_num = 1):
     for switch in tier:
-	switches[switch]['tier'] = tier_num
-    next_tier = [switch for switch in switches if not 'tier' in switches[switch]]
+        switches[switch]['tier'] = tier_num
+    next_tier = [switch for switch in switches
+                     if not 'tier' in switches[switch]]
 
     return next_tier, tier_num+1
 
 switches = {}
-#hosts = []
 
 script_name = os.path.basename(__file__)
-tier_names = [['Switch'], ['Edge, Core'], ['Edge', 'Leaf', 'Spine']]
+tier_names = [['Switch'], ['Edge', 'Core'], ['Edge', 'Leaf', 'Spine']]
 ibnetdiscover_cmd = '/usr/sbin/ibnetdiscover'
-#ibnetdiscover_cmd = '/home/kku/ibtopo/ibnetdiscover'
 ibnetdiscover_args = ''
 
 parser = argparse.ArgumentParser(description = '''`{}` parses `ibnetdiscover`
@@ -194,6 +209,7 @@ else:
                 'ports': ports,
                 'hosts': {},
                 'switches': {},
+                'parent': None,
                 }
             in_switch = guid
         elif re.match('\[.*', line):
@@ -225,7 +241,7 @@ else:
         else:
             in_switch = False
 
-#assign_tiers(switches)
+#max_tier = assign_tiers(switches)
 
 if args['dump']:
     print(json.dumps(switches, indent=4))
@@ -255,7 +271,11 @@ else:
         if n_links:
             b_factor = Fraction(info['ports'] - sw_links, sw_links)
             comment += ',\tblocking-factor: {}:{}'.format(b_factor.numerator,
-                                                         b_factor.denominator)
+                                                        b_factor.denominator)
+        else:
+            comment += ',\tblocking-factor: N/A'
+        if 'tier' in info:
+            comment += ',\ttier: {}'.format(tier_names[max_tier-1][info['tier']-1])
 	out_len = max(len(out_str), out_len)
 	output[0].append(out_str)
 	output[1].append(comment)
