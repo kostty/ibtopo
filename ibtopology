@@ -188,8 +188,13 @@ else:
             guid, name = parts[1], parts[3]
             lid = re.search('.* lid (\d+) .*', parts[4]).group(1)
             ports = int(re.split('\s+', parts[0])[1])
-            switches[guid] = {'name': name, 'lid': lid, 'ports': ports,
-                              'hosts': {}, 'switches': {}}
+            switches[guid] = {
+                'name': name,
+                'lid': lid,
+                'ports': ports,
+                'hosts': {},
+                'switches': {},
+                }
             in_switch = guid
         elif re.match('\[.*', line):
             if not in_switch:
@@ -206,8 +211,12 @@ else:
                 if guid in switch['hosts']:
                     switch['hosts'][guid]['links'] += 1
                 else:
-                    switch['hosts'][guid] = {'links': 1, 'lid': lid, 'name': name,
-                                                                       'hca': hca}
+                    switch['hosts'][guid] = {
+                        'links': 1,
+                        'lid': lid,
+                        'name': name,
+                        'hca': hca,
+                        }
             elif re.match('S-', guid):
                 if guid in switch['switches']:
                     switch['switches'][guid]['links'] += 1
