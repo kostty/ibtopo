@@ -73,6 +73,8 @@ parser.add_argument('-P', '--prefix', default='Switch',
                     help='Prefix to use when generating switch names')
 parser.add_argument('-O', '--omni-path', action='store_true',
                     help='The fabric is based on Intel\'s Omni-Path')
+parser.add_argument('-p', '--plot', action='store_true',# default='topology.png',
+                    help='Plot the fabric topology in a file')
 args = parser.parse_args()
 args = vars(args)
 
@@ -245,6 +247,25 @@ else:
 
 if args['dump']:
     print(json.dumps(switches, indent=4))
+elif args['plot']:
+    import networkx as nx
+    import matplotlib as mpl
+    mpl.use('Agg')
+    import matplotlib.pyplot as plt
+    from nx.drawing.nx_agraph import graphviz_layout
+
+    fab = Fabric()
+    fab.num_tiers = max_tier
+
+    G = nx.Graph()
+    for sw1 in switches:
+        from_switch = switches[sw1]
+        if from_switch['parent']:
+            continue
+        for to_switch in from_switch['switches']:
+            to_info = from_switch['switches'][to_switch]
+            G.add_edge(from_switch, sw2, width=to_info['links'])
+    G.draw()
 else:
     num2guid = {}
     output = [[], []]
