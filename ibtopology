@@ -141,7 +141,7 @@ if omnipath:
                     # the XML.
                     switches[parent_guid]['ports'] += 16
                 switches[parent_guid]['name'] = names[0]
-        elif sys['Node']['NodeType_Int'] == "2":
+        elif sys['Node']['NodeType'] == 'SW':
             guid = sys['Node']['NodeGUID']
             name = sys['Node']['NodeDesc']
             ports = int(sys['Node']['NumPorts'])
@@ -160,7 +160,7 @@ if omnipath:
             continue
         sw_guids = []
         for port in link['Port']:
-            if port['NodeType_Int'] == '1':
+            if port['NodeType'] == 'FI':
                 host_guid = port['NodeGUID']
                 names = port['NodeDesc'].split()
                 host = {
@@ -168,12 +168,15 @@ if omnipath:
                     'hca': names[1],
                     'links': 1,
                     }
-            else:
+            elif port['NodeType'] == 'SW':
                 guid = port['NodeGUID']
                 if switches[guid]['parent']:
                     sw_guids.append(switches[guid]['parent'])
                 else:
                     sw_guids.append(guid)
+            else:
+                print('Oops, an unknown port type encountered: `{}`!'.format(
+                            port['NodeType']))
         if len(sw_guids) == 1:
             switch = switches[sw_guids[0]]
             if host_guid in switch['hosts']:
@@ -247,12 +250,17 @@ if args['dump']:
     print(json.dumps(switches, indent=4))
 else:
     num2guid = {}
-    output = [[], []]
+    output = []
+    link_info = []
     out_len = 0
     switches = {k: v for k, v in switches.items() if not v['parent']}
     for i, guid in enumerate(switches):
         num2guid[guid] = i+1
     for guid, info in switches.items():
+        switch_links = {}
+        node_links = {}
+        comment = []
+        link_str = []
         if info['parent']:
             continue
         switch = '{}{}'.format(prefix, num2guid[guid])
@@ -266,20 +274,40 @@ else:
                                        num2guid[x]) for x in info['switches']]
             isl = hostlist.collect_hostlist(isl)
             out_str += ' Switches={}'.format(isl)
-        comment = '# Free ports: {}'.format(info['ports'] - 
-                                            (n_links + sw_links))
+        comment.append(
+                'Free ports: {}'.format(info['ports'] - n_links + sw_links)
+                )
         if n_links:
             b_factor = Fraction(info['ports'] - sw_links, sw_links)
-            comment += ',\tblocking-factor: {}:{}'.format(b_factor.numerator,
-                                                        b_factor.denominator)
+            comment.append('blocking-factor: {}:{}'.format(b_factor.numerator, b_factor.denominator))
         else:
-            comment += ',\tblocking-factor: N/A'
+            comment.append('blocking-factor: N/A')
         if 'tier' in info:
-            comment += ',\ttier: {}'.format(tier_names[max_tier-1][info['tier']-1])
-	out_len = max(len(out_str), out_len)
-	output[0].append(out_str)
-	output[1].append(comment)
+            comment.append('tier: {}'.format(tier_names[max_tier-1][info['tier']-1]))
 
-    output = ['{:<{}} {}'.format(out_str, out_len, comment) for out_str, comment in zip(output[0], output[1])]
+        for neigh_guid, neigh_info in info['switches'].items():
+            if neigh_info['links'] not in switch_links:
+                switch_links[neigh_info['links']] = []
+            switch_links[neigh_info['links']].append(str(num2guid[neigh_guid]))
+        for num_links, switch_num in switch_links.items():
+            link_str.append('{}{}: {}'.format(prefix,
+                hostlist.collect_hostlist(switch_num), num_links))
+
+        for neigh_guid, neigh_info in info['hosts'].items():
+            if neigh_info['links'] not in node_links:
+                node_links[neigh_info['links']] = []
+            node_links[neigh_info['links']].append(neigh_info['name'])
+        for num_links, node_name in node_links.items():
+            link_str.append('{}: {}'.format(
+                hostlist.collect_hostlist(node_name), num_links))
+
+        link_str = ', '.join(link_str)
+        comment_str = ',\t'.join(comment)
+        out_len = max(len(out_str), out_len)
+    	output.append((out_str, comment_str, link_str))
+
+    output = ['{:<{}}  # {}\n'
+              '# Links: {}\n'.format(out_str, out_len, comment, link_info)
+              for (out_str, comment, link_info) in output] 
     print('\n'.join(output))
 
