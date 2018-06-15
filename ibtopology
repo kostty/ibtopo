@@ -18,6 +18,9 @@ import json
 import xmltodict
 from fractions import Fraction
 
+
+#/////////////// Class(es)
+
 class Fabric():
 
     tier_labels = ['', 'Switch', ('Edge', 'Core'), ('Edge', 'Leaf', 'Spine')]
@@ -31,6 +34,8 @@ class Fabric():
     def tier_names(self):
         return tier_labels[self.num_tiers]
 
+
+#///////////////// Functions
 
 def assign_tiers(switches):
     start_tier = [switch for switch in switches if len(switches[switch]['hosts'])]
@@ -47,6 +52,37 @@ def set_tier(switches, tier, tier_num = 1):
                      if not 'tier' in switches[switch]]
 
     return next_tier, tier_num+1
+
+def setup_guid_mapping(topo, gen_names, prefix):
+    '''Return a mapper function, that maps a switch's GUID to its name
+
+    Args:
+        topo (dict): Switches in the fabrica (in case of a director, leaf
+                     and spine modules omitted)
+        gen_names (bool): If new names should be generated in format of
+                          `prefix+N`
+        prefix (str): The prefix to use for new names
+    '''
+
+    guid_to_name_map = {}
+    if gen_names:
+        for i, guid in enumerate(topo):
+            guid_to_name_map[guid] = '{}{}'.format(prefix, i+1)
+    else:
+        for guid, info in topo.items():
+            guid_to_name_map[guid] = info['name']
+
+    def guid_to_name(guid):
+        return guid_to_name_map[guid]
+
+    return guid_to_name
+
+def print_lines(lines):
+    for line in lines:
+        print line
+
+
+#///////////////// Code
 
 switches = {}
 
@@ -73,6 +109,10 @@ parser.add_argument('-P', '--prefix', default='Switch',
                     help='Prefix to use when generating switch names')
 parser.add_argument('-O', '--omni-path', action='store_true',
                     help='The fabric is based on Intel\'s Omni-Path')
+parser.add_argument('-N', '--no-mapping', action='store_true',
+                    help='Switch name mapping isn\'t needed, '
+                         'as it\'s probably has already been handled'
+                         'outside of the script')
 args = parser.parse_args()
 args = vars(args)
 
@@ -80,6 +120,7 @@ input_file = args['input_file']
 prefix = args['prefix']
 nodes_only = args['nodes_only']
 omnipath = args['omni_path']
+do_mapping = not args['no_mapping']
 
 if args['ibnetdiscover_path']:
     ibnetdiscover_cmd = args['ibnetdiscover_path']
@@ -108,6 +149,15 @@ else:
         print('`{}` exited with rc={}\n'.format(cmd_str, e.returncode))
         print('The error message was as follows:\n\n {}'.format(e.output))
         exit(4)
+
+
+# Save for later use
+#        sorted_guids = sorted(
+#                switches,
+#                key=lambda guid: len(switches[guid]['hosts']),
+#                reverse=True,
+#                )
+
 
 if omnipath:
     report = xmltodict.parse(f)['Report']
@@ -163,6 +213,8 @@ if omnipath:
             if port['NodeType'] == 'FI':
                 host_guid = port['NodeGUID']
                 names = port['NodeDesc'].split()
+                if len(names) == 1:
+                    names.append('N/A')
                 host = {
                     'name': names[0],
                     'hca': names[1],
@@ -249,13 +301,16 @@ else:
 if args['dump']:
     print(json.dumps(switches, indent=4))
 else:
-    num2guid = {}
     output = []
     link_info = []
     out_len = 0
     switches = {k: v for k, v in switches.items() if not v['parent']}
-    for i, guid in enumerate(switches):
-        num2guid[guid] = i+1
+    
+    guid_to_name = setup_guid_mapping(
+                                      topo=switches,
+                                      gen_names=do_mapping,
+                                      prefix=prefix)
+
     for guid, info in switches.items():
         switch_links = {}
         node_links = {}
@@ -263,24 +318,26 @@ else:
         link_str = []
         if info['parent']:
             continue
-        switch = '{}{}'.format(prefix, num2guid[guid])
+        switch = '{}'.format(guid_to_name(guid))
         nodes = [ n['name'] for n in info['hosts'].values() ]
         n_links = sum([n['links'] for n in info['hosts'].values()])
         sw_links = sum([s['links'] for s in info['switches'].values()])
         nodes = hostlist.collect_hostlist(nodes)
         out_str = 'SwitchName={} Nodes={}'.format(switch, nodes)
         if not nodes_only:
-            isl = [ '{}{}'.format(prefix,
-                                       num2guid[x]) for x in info['switches']]
+            isl = ['{}'.format(guid_to_name(x)) for x in info['switches']]
             isl = hostlist.collect_hostlist(isl)
             out_str += ' Switches={}'.format(isl)
+        #free_ports = info['ports'] - (n_links + sw_links)
         comment.append(
                 'Free ports: {}'.format(info['ports'] - n_links + sw_links)
                 )
         if n_links:
             b_factor = Fraction(info['ports'] - sw_links, sw_links)
+            #b_factor = '{}:{}'.format(b_factor.numerator,b_factor.denominator)
             comment.append('blocking-factor: {}:{}'.format(b_factor.numerator, b_factor.denominator))
         else:
+            b_factor = 'N/A'
             comment.append('blocking-factor: N/A')
         if 'tier' in info:
             comment.append('tier: {}'.format(tier_names[max_tier-1][info['tier']-1]))
@@ -288,10 +345,12 @@ else:
         for neigh_guid, neigh_info in info['switches'].items():
             if neigh_info['links'] not in switch_links:
                 switch_links[neigh_info['links']] = []
-            switch_links[neigh_info['links']].append(str(num2guid[neigh_guid]))
-        for num_links, switch_num in switch_links.items():
-            link_str.append('{}{}: {}'.format(prefix,
-                hostlist.collect_hostlist(switch_num), num_links))
+            switch_links[neigh_info['links']].append(str(guid_to_name(neigh_guid)))
+        for num_links, switch_names in switch_links.items():
+            switch_links = hostlist.collect_hostlist(switch_names)
+        #    num_
+            link_str.append(
+               '{}: {}'.format(hostlist.collect_hostlist(switch_names), num_links))
 
         for neigh_guid, neigh_info in info['hosts'].items():
             if neigh_info['links'] not in node_links:
@@ -306,8 +365,7 @@ else:
         out_len = max(len(out_str), out_len)
     	output.append((out_str, comment_str, link_str))
 
-    output = ['{:<{}}  # {}\n'
-              '# Links: {}\n'.format(out_str, out_len, comment, link_info)
-              for (out_str, comment, link_info) in output] 
-    print('\n'.join(output))
+    output = ['{:<{}} # {}\n# Links: {}\n'.format(out_str, out_len, comment, link_info)
+              for (out_str, comment, link_info) in output]
+    print_lines(output)
 
