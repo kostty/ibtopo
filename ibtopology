@@ -81,6 +81,69 @@ def print_lines(lines):
     for line in lines:
         print line
 
+def join_items(lst, sep1, sep2):
+    '''Form a string of text from a list of tuples (`Name`, `Value`)
+
+    Args:
+        lst (list): List of tuples to join into a string
+        sep1 (str): Separator to join items of tuples with
+        sep2 (str): Separator to join items of the list with'''
+
+    def parse_tuple(item):
+        return sep1.join(item)
+
+    out = []
+    for item in lst:
+        if len(item) == 1:
+            item = (item[0], '')
+        if isinstance(item[1], list):
+            #return join_items(item[1], sep1, sep2)
+            item = (item[0], join_items(item[1], sep1, sep2))
+
+        out.append(sep1.join(item))
+
+    return sep2.join(out)
+
+def pad_items(lst):
+    max_len = 0
+    for item in lst:
+        max_len = max(len(item), max_len)
+
+    return '{:<{}}'.format(item, max_len)
+
+def get_recursive_item(lst, ind):
+    '''
+    Traverse a list of Lists (of tuples) and return a list of the ind-th
+    elements from each List.
+    '''
+    return [x[ind][1] for x in lst]
+
+def pad_table(lst):
+    '''
+    Pad every `value` part of the table
+    '''
+
+    for i in lst:
+        pass 
+
+def count_links(dct, do_map):
+    '''
+    Group connected switches/nodes by the count of links
+    '''
+    by_count = {}
+
+    for guid, info in dct.items():
+        if info['links'] not in by_count:
+             by_count[info['links']] = []
+        if do_map:
+            name = guid_to_name(guid)
+        else:
+            name = info['name']
+        by_count[info['links']].append(name)
+    for count, names in by_count.items():
+        by_count[count] = hostlist.collect_hostlist(names)
+    
+    return by_count
 
 #///////////////// Code
 
@@ -113,6 +176,8 @@ parser.add_argument('-N', '--no-mapping', action='store_true',
                     help='Switch name mapping isn\'t needed, '
                          'as it\'s probably has already been handled'
                          'outside of the script')
+parser.add_argument('-S', '--no-slurm', action='store_true',
+                    help='Print not in Slurm format')
 args = parser.parse_args()
 args = vars(args)
 
@@ -121,6 +186,7 @@ prefix = args['prefix']
 nodes_only = args['nodes_only']
 omnipath = args['omni_path']
 do_mapping = not args['no_mapping']
+no_slurm = args['no_slurm']
 
 if args['ibnetdiscover_path']:
     ibnetdiscover_cmd = args['ibnetdiscover_path']
@@ -306,8 +372,7 @@ else:
     out_len = 0
     switches = {k: v for k, v in switches.items() if not v['parent']}
     
-    guid_to_name = setup_guid_mapping(
-                                      topo=switches,
+    guid_to_name = setup_guid_mapping(topo=switches,
                                       gen_names=do_mapping,
                                       prefix=prefix)
 
@@ -316,56 +381,76 @@ else:
         node_links = {}
         comment = []
         link_str = []
+        outl = []
+        coml = []
+        
         if info['parent']:
             continue
+        
         switch = '{}'.format(guid_to_name(guid))
         nodes = [ n['name'] for n in info['hosts'].values() ]
-        n_links = sum([n['links'] for n in info['hosts'].values()])
-        sw_links = sum([s['links'] for s in info['switches'].values()])
         nodes = hostlist.collect_hostlist(nodes)
-        out_str = 'SwitchName={} Nodes={}'.format(switch, nodes)
+        #out_str = 'SwitchName={} Nodes={}'.format(switch, nodes)
+        outl.append(('SwitchName', switch))
+        outl.append(('Nodes', nodes))
         if not nodes_only:
             isl = ['{}'.format(guid_to_name(x)) for x in info['switches']]
             isl = hostlist.collect_hostlist(isl)
-            out_str += ' Switches={}'.format(isl)
-        #free_ports = info['ports'] - (n_links + sw_links)
+            #out_str += ' Switches={}'.format(isl)
+            outl.append(('Switches', isl))
+        n_links = sum([n['links'] for n in info['hosts'].values()])
+        sw_links = sum([s['links'] for s in info['switches'].values()])
+        free_ports = info['ports'] - (n_links + sw_links)
+        coml.append(('Free ports', str(free_ports)))
         comment.append(
                 'Free ports: {}'.format(info['ports'] - n_links + sw_links)
                 )
         if n_links:
             b_factor = Fraction(info['ports'] - sw_links, sw_links)
-            #b_factor = '{}:{}'.format(b_factor.numerator,b_factor.denominator)
-            comment.append('blocking-factor: {}:{}'.format(b_factor.numerator, b_factor.denominator))
+            b_factor = '{}:{}'.format(b_factor.numerator,b_factor.denominator)
         else:
             b_factor = 'N/A'
-            comment.append('blocking-factor: N/A')
+        #comment.append('blocking-factor: {}'.format(b_factor))
+        coml.append(('blocking', b_factor))
         if 'tier' in info:
             comment.append('tier: {}'.format(tier_names[max_tier-1][info['tier']-1]))
 
-        for neigh_guid, neigh_info in info['switches'].items():
-            if neigh_info['links'] not in switch_links:
-                switch_links[neigh_info['links']] = []
-            switch_links[neigh_info['links']].append(str(guid_to_name(neigh_guid)))
-        for num_links, switch_names in switch_links.items():
-            switch_links = hostlist.collect_hostlist(switch_names)
-        #    num_
-            link_str.append(
-               '{}: {}'.format(hostlist.collect_hostlist(switch_names), num_links))
+        switch_links = [(nam, str(cnt)) for cnt, nam in
+                count_links(info['switches'], do_map=True).items()]
+#        for nb_guid, nb_info in info['switches'].items():
+#            if nb_info['links'] not in switch_links:
+#                switch_links[nb_info['links']] = []
+#            switch_links[nb_info['links']].append(guid_to_name(nb_guid))
+#        for num_links, switch_names in switch_links.items():
+#            switch_names = hostlist.collect_hostlist(switch_names)
+#            #link_str.append(
+#               '{}: {}'.format(hostlist.collect_hostlist(switch_names), num_links))
 
-        for neigh_guid, neigh_info in info['hosts'].items():
-            if neigh_info['links'] not in node_links:
-                node_links[neigh_info['links']] = []
-            node_links[neigh_info['links']].append(neigh_info['name'])
-        for num_links, node_name in node_links.items():
-            link_str.append('{}: {}'.format(
-                hostlist.collect_hostlist(node_name), num_links))
+        node_links = [(nam, str(cnt)) for cnt, nam in
+                count_links(info['hosts'], do_map=False).items()]
+#        for nb_guid, nb_info in info['hosts'].items():
+#            if nb_info['links'] not in node_links:
+#                node_links[nb_info['links']] = []
+#            node_links[nb_info['links']].append(nb_info['name'])
+#        for num_links, node_name in node_links.items():
+#            link_str.append('{}: {}'.format(
+#                hostlist.collect_hostlist(node_name), num_links))
+#
+        #link_str = ', '.join(link_str)
+        #comment_str = ',\t'.join(comment)
+        #out_len = max(len(out_str), out_len)
+    	#output.append((out_str, comment_str, link_str))
+        if no_slurm:
+            output.append(
+                join_items(
+                    [(switch, [('Switches', switch_links), ('Hosts',
+                        node_links)])],
+                    sep1=': ', sep2=', '))
+        else:
+        	output.append('{}\t# {}'.format(join_items(outl,'=',' '),
+                    join_items(coml,': ',', ')))
 
-        link_str = ', '.join(link_str)
-        comment_str = ',\t'.join(comment)
-        out_len = max(len(out_str), out_len)
-    	output.append((out_str, comment_str, link_str))
-
-    output = ['{:<{}} # {}\n# Links: {}\n'.format(out_str, out_len, comment, link_info)
-              for (out_str, comment, link_info) in output]
+    #output = ['{:<{}} # {}\n# Links: {}\n'.format(out_str, out_len, comment, link_info)
+    #          for (out_str, comment, link_info) in output]
     print_lines(output)
 
