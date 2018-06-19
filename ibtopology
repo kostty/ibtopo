@@ -66,7 +66,8 @@ def setup_guid_mapping(topo, gen_names, prefix):
 
     guid_to_name_map = {}
     if gen_names:
-        for i, guid in enumerate(topo):
+        for i, (guid, info) in enumerate(sorted(topo.items(), key=lambda
+            x: len(x[1]['hosts']), reverse=True)):
             guid_to_name_map[guid] = '{}{}'.format(prefix, i+1)
     else:
         for guid, info in topo.items():
@@ -207,7 +208,7 @@ else:
     try:
         f = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
         f = f.split('\n')
-    except OSError as e:
+    
         if e.errno == 2:
             print('Error: `{}` couldn\'t be found'.format(cmd_str))
             exit(3)
@@ -376,7 +377,8 @@ else:
                                       gen_names=do_mapping,
                                       prefix=prefix)
 
-    for guid, info in switches.items():
+    for guid, info in sorted(switches.items(), key=lambda sw:
+            len(sw[1]['hosts']), reverse=True):
         switch_links = {}
         node_links = {}
         comment = []
