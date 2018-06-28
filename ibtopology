@@ -7,6 +7,7 @@ Todo:
   * Hide Switches= when empty and/or on demand (via argument)
   * Configurable switch names, e.g. switch, S, edge etc
   * Configurable levels of ISLs
+  * Output sorting based on switch names
 """
 
 import os.path
@@ -168,7 +169,7 @@ switches = {}
 script_name = os.path.basename(__file__)
 tier_names = [['Switch'], ['Edge', 'Core'], ['Edge', 'Leaf', 'Spine']]
 topo_cmd = (['/usr/sbin/ibnetdiscover',],
-            ['/usr/sbin/opareport', '-o comps -o links -x'])
+            ['/usr/sbin/opareport', '-o', 'comps', '-o', 'links', '-x'])
 
 parser = argparse.ArgumentParser(description = '''`{}` parses `ibnetdiscover`
                           output to generate a Slurm topology file and extract
@@ -233,8 +234,6 @@ else:
     cmd_str = ' '.join(cmd)
     try:
         topo_file = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-        #topo_file = f.read()
-        #f = f.split('\n')
 
     except OSError as e:
         if e.errno == 2:
