@@ -38,18 +38,27 @@ class Fabric():
 #///////////////// Functions
 
 def assign_tiers(switches):
-    start_tier = [switch for switch in switches if len(switches[switch]['hosts'])]
-    next_tier, next_tier_num = set_tier(switches, start_tier)
+    start_tier = [guid for guid in switches if len(switches[guid]['hosts'])]
+    next_tier, next_num = set_tier(switches, start_tier, tier_num=1)
     while next_tier:
-        next_tier, next_num = set_tier(switches, next_tier, next_tier_num)
+        next_tier, next_num = set_tier(switches, next_tier, next_num)
 
     return next_num-1
 
-def set_tier(switches, tier, tier_num = 1):
-    for switch in tier:
-        switches[switch]['tier'] = tier_num
-    next_tier = [switch for switch in switches
-                     if not 'tier' in switches[switch]]
+def set_tier(switches, tier, tier_num=1):
+    next_tier = set()
+    for guid in tier:
+        switch = switches[guid]
+        switch['tier'] = tier_num
+        for neigh in switch['switches']:
+            if switches[neigh]['tier'] == tier_num:
+                pass
+                #print('Topology warning: switches {} and {} are '
+                #      'connected to each other, while seeming to be in the '
+                #      'same tier'.format(guid_to_name(guid),
+                #                          guid_to_name(neigh)))
+    next_tier = set([guid for guid in switches
+                     if not 'tier' in switches[guid]])
 
     return next_tier, tier_num+1
 
@@ -57,7 +66,7 @@ def setup_guid_mapping(topo, gen_names, prefix):
     '''Return a mapper function, that maps a switch's GUID to its name
 
     Args:
-        topo (dict): Switches in the fabrica (in case of a director, leaf
+        topo (dict): Switches in the fabric (in the case of a director, leaf
                      and spine modules omitted)
         gen_names (bool): If new names should be generated in format of
                           `prefix+N`
@@ -67,8 +76,9 @@ def setup_guid_mapping(topo, gen_names, prefix):
     guid_to_name_map = {}
     if gen_names:
         for i, (guid, info) in enumerate(sorted(topo.items(), key=lambda
-            x: len(x[1]['hosts']), reverse=True)):
-            guid_to_name_map[guid] = '{}{}'.format(prefix, i+1)
+            sw: len(sw[1]['hosts']), reverse=True)):
+            if not info['parent']:
+                guid_to_name_map[guid] = '{}{}'.format(prefix, i+1)
     else:
         for guid, info in topo.items():
             guid_to_name_map[guid] = info['name']
@@ -98,7 +108,6 @@ def join_items(lst, sep1, sep2):
         if len(item) == 1:
             item = (item[0], '')
         if isinstance(item[1], list):
-            #return join_items(item[1], sep1, sep2)
             item = (item[0], join_items(item[1], sep1, sep2))
 
         out.append(sep1.join(item))
@@ -143,8 +152,14 @@ def count_links(dct, do_map):
         by_count[info['links']].append(name)
     for count, names in by_count.items():
         by_count[count] = hostlist.collect_hostlist(names)
-    
+
     return by_count
+
+def collect_hostlist(lst, slurm):
+    collect = hostlist.collect_hostlist(lst)
+    if slurm and collect[-1] != ']':
+        return ','.join(lst)
+    return collect
 
 #///////////////// Code
 
@@ -152,24 +167,26 @@ switches = {}
 
 script_name = os.path.basename(__file__)
 tier_names = [['Switch'], ['Edge', 'Core'], ['Edge', 'Leaf', 'Spine']]
-ibnetdiscover_cmd = '/usr/sbin/ibnetdiscover'
-ibnetdiscover_args = ''
+topo_cmd = (['/usr/sbin/ibnetdiscover',],
+            ['/usr/sbin/opareport', '-o comps -o links -x'])
 
 parser = argparse.ArgumentParser(description = '''`{}` parses `ibnetdiscover`
-         output to generate a Slurm topology file and extract some other useful
-         information'''.format(script_name))
+                          output to generate a Slurm topology file and extract
+                          some other useful information'''.format(script_name))
 parser.add_argument('-f', '--input-file', metavar='PATH',
                     help='A file containing an output of `ibnetdiscover`')
 parser.add_argument('-d', '--dump', action='store_true',
                     help='Dump the internal structure in JSON')
 parser.add_argument('-n', '--nodes-only', action='store_true',
                     help='Only list connected nodes, not switches')
-parser.add_argument('-I', '--ibnetdiscover-path', metavar='PATH',
-                    help='The full path to the `ibnetdiscover` program')
-parser.add_argument('-A', '--ibnetdiscover-args', metavar='ARGS',
+parser.add_argument('-I', '--cmd-path', metavar='PATH',
+                    help='''The alternative path to the `ibnetdiscover` or 
+                         `opareport` program''')
+parser.add_argument('-A', '--cmd-args', metavar='ARGS',
                     help='''Additional arguments to be passed to the
-          `ibnetdiscover` program (needs to be quoted, e.g. -A"--help"''')
-parser.add_argument('-P', '--prefix', default='Switch',
+                         `ibnetdiscover` or `opareport` program
+                         (needs to be quoted, e.g. -A"--help"''')
+parser.add_argument('-P', '--prefix', default='sw',
                     help='Prefix to use when generating switch names')
 parser.add_argument('-O', '--omni-path', action='store_true',
                     help='The fabric is based on Intel\'s Omni-Path')
@@ -179,6 +196,8 @@ parser.add_argument('-N', '--no-mapping', action='store_true',
                          'outside of the script')
 parser.add_argument('-S', '--no-slurm', action='store_true',
                     help='Print not in Slurm format')
+parser.add_argument('--full', action='store_true',
+                    help='For topology.conf, list all switches')
 args = parser.parse_args()
 args = vars(args)
 
@@ -187,13 +206,8 @@ prefix = args['prefix']
 nodes_only = args['nodes_only']
 omnipath = args['omni_path']
 do_mapping = not args['no_mapping']
-no_slurm = args['no_slurm']
-
-if args['ibnetdiscover_path']:
-    ibnetdiscover_cmd = args['ibnetdiscover_path']
-
-if args['ibnetdiscover_args']:
-    ibnetdiscover_args = args['ibnetdiscover_args']
+show_slurm = not args['no_slurm']
+show_full = args['full']
 
 if input_file:
     try:
@@ -201,33 +215,38 @@ if input_file:
     except IOError as e:
         print('Error: {}: "{}"'.format(e.strerror, input_file))
         exit(2)
+    topo_file = f.read()
+    f.close()
 else:
-    cmd = [ ibnetdiscover_cmd ]
-    cmd.append(ibnetdiscover_args)
+
+    if omnipath:
+        cmd = topo_cmd[1]
+    else:
+        cmd = topo_cmd[0]
+
+    if args['cmd_path']:
+        cmd[0] = args['cmd_path']
+
+    if args['cmd_args']:
+        cmd.append(args['cmd_args'])
+
     cmd_str = ' '.join(cmd)
     try:
-        f = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-        f = f.split('\n')
-    
+        topo_file = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        #topo_file = f.read()
+        #f = f.split('\n')
+
+    except OSError as e:
         if e.errno == 2:
-            print('Error: `{}` couldn\'t be found'.format(cmd_str))
+            print('Error: `{}` couldn\'t be found'.format(cmd[0]))
             exit(3)
     except subprocess.CalledProcessError as e:
         print('`{}` exited with rc={}\n'.format(cmd_str, e.returncode))
         print('The error message was as follows:\n\n {}'.format(e.output))
         exit(4)
 
-
-# Save for later use
-#        sorted_guids = sorted(
-#                switches,
-#                key=lambda guid: len(switches[guid]['hosts']),
-#                reverse=True,
-#                )
-
-
 if omnipath:
-    report = xmltodict.parse(f)['Report']
+    report = xmltodict.parse(topo_file)['Report']
     systems = report['ComponentSummary']['Systems']['System']
     links = report['LinkSummary']['Link']
     for sys in systems:
@@ -239,6 +258,7 @@ if omnipath:
                 'director': True,
                 'hosts': {},
                 'switches': {},
+                'tier': None,
                 }
             for node in sys['Node']:
                 guid = node['NodeGUID']
@@ -251,6 +271,7 @@ if omnipath:
                     'director': False,
                     'hosts': {},
                     'switches': {},
+                    'tier': None,
                     }
                 if names[1].startswith('L'):
                     # Below, 16 is an assumption based on the current
@@ -269,9 +290,9 @@ if omnipath:
                 'director': False,
                 'hosts': {},
                 'switches': {},
+                'tier': None,
                 }
 
-    #json.dumps(switches, indent=4)
     for link in links:
         if int(link['Internal']):
             continue
@@ -314,11 +335,10 @@ if omnipath:
             else:
                 switchA['switches'][sw_guids[1]] = {'links': 1}
 
-#    switches = report
-
 else:
     in_switch = False
-    for line in f:
+    topo_file = topo_file.split('\n')
+    for line in topo_file:
         line = line.rstrip()
         if re.match('Switch.*', line):
             parts = line.split('"',4)
@@ -332,6 +352,7 @@ else:
                 'hosts': {},
                 'switches': {},
                 'parent': None,
+                'tier': None,
                 }
             in_switch = guid
         elif re.match('\[.*', line):
@@ -363,19 +384,16 @@ else:
         else:
             in_switch = False
 
-#max_tier = assign_tiers(switches)
+guid_to_name = setup_guid_mapping(topo=switches,
+                                      gen_names=do_mapping,
+                                      prefix=prefix)
+top_tier = assign_tiers(switches)
 
 if args['dump']:
     print(json.dumps(switches, indent=4))
 else:
     output = []
-    link_info = []
-    out_len = 0
     switches = {k: v for k, v in switches.items() if not v['parent']}
-    
-    guid_to_name = setup_guid_mapping(topo=switches,
-                                      gen_names=do_mapping,
-                                      prefix=prefix)
 
     for guid, info in sorted(switches.items(), key=lambda sw:
             len(sw[1]['hosts']), reverse=True):
@@ -383,76 +401,47 @@ else:
         node_links = {}
         comment = []
         link_str = []
-        outl = []
-        coml = []
-        
+        out_list = []
+
         if info['parent']:
             continue
-        
+
         switch = '{}'.format(guid_to_name(guid))
         nodes = [ n['name'] for n in info['hosts'].values() ]
-        nodes = hostlist.collect_hostlist(nodes)
-        #out_str = 'SwitchName={} Nodes={}'.format(switch, nodes)
-        outl.append(('SwitchName', switch))
-        outl.append(('Nodes', nodes))
-        if not nodes_only:
-            isl = ['{}'.format(guid_to_name(x)) for x in info['switches']]
-            isl = hostlist.collect_hostlist(isl)
-            #out_str += ' Switches={}'.format(isl)
-            outl.append(('Switches', isl))
+        if nodes:
+            nodes = collect_hostlist(nodes, show_slurm)
+        out_list.append(('SwitchName', switch))
         n_links = sum([n['links'] for n in info['hosts'].values()])
         sw_links = sum([s['links'] for s in info['switches'].values()])
+        if n_links:
+            out_list.append(('Nodes', nodes))
+        else:
+            isl = ['{}'.format(guid_to_name(x)) for x in info['switches']]
+            isl = collect_hostlist(isl, show_slurm)
+            out_list.append(('Switches', isl))
         free_ports = info['ports'] - (n_links + sw_links)
-        coml.append(('Free ports', str(free_ports)))
-        comment.append(
-                'Free ports: {}'.format(info['ports'] - n_links + sw_links)
-                )
+        comment.append(('Free ports', str(free_ports)))
         if n_links:
             b_factor = Fraction(info['ports'] - sw_links, sw_links)
             b_factor = '{}:{}'.format(b_factor.numerator,b_factor.denominator)
+            comment.append(('blocking', b_factor))
         else:
             b_factor = 'N/A'
-        #comment.append('blocking-factor: {}'.format(b_factor))
-        coml.append(('blocking', b_factor))
         if 'tier' in info:
-            comment.append('tier: {}'.format(tier_names[max_tier-1][info['tier']-1]))
+            comment.append(('tier',str(info['tier'])))
 
-        switch_links = [(nam, str(cnt)) for cnt, nam in
+        switch_links = [(name, str(cnt)) for cnt, name in
                 count_links(info['switches'], do_map=True).items()]
-#        for nb_guid, nb_info in info['switches'].items():
-#            if nb_info['links'] not in switch_links:
-#                switch_links[nb_info['links']] = []
-#            switch_links[nb_info['links']].append(guid_to_name(nb_guid))
-#        for num_links, switch_names in switch_links.items():
-#            switch_names = hostlist.collect_hostlist(switch_names)
-#            #link_str.append(
-#               '{}: {}'.format(hostlist.collect_hostlist(switch_names), num_links))
 
-        node_links = [(nam, str(cnt)) for cnt, nam in
+        node_links = [(name, str(cnt)) for cnt, name in
                 count_links(info['hosts'], do_map=False).items()]
-#        for nb_guid, nb_info in info['hosts'].items():
-#            if nb_info['links'] not in node_links:
-#                node_links[nb_info['links']] = []
-#            node_links[nb_info['links']].append(nb_info['name'])
-#        for num_links, node_name in node_links.items():
-#            link_str.append('{}: {}'.format(
-#                hostlist.collect_hostlist(node_name), num_links))
-#
-        #link_str = ', '.join(link_str)
-        #comment_str = ',\t'.join(comment)
-        #out_len = max(len(out_str), out_len)
-    	#output.append((out_str, comment_str, link_str))
-        if no_slurm:
+        if not show_slurm:
+            link_info = [('Switches', switch_links), ('Hosts', node_links)]
             output.append(
-                join_items(
-                    [(switch, [('Switches', switch_links), ('Hosts',
-                        node_links)])],
-                    sep1=': ', sep2=', '))
+                    join_items([(switch, link_info)], sep1=': ', sep2=', '))
         else:
-        	output.append('{}\t# {}'.format(join_items(outl,'=',' '),
-                    join_items(coml,': ',', ')))
+            output.append('{}\t\t# {}'.format(join_items(out_list,'=','\t'),
+                                            join_items(comment,': ',', ')))
 
-    #output = ['{:<{}} # {}\n# Links: {}\n'.format(out_str, out_len, comment, link_info)
-    #          for (out_str, comment, link_info) in output]
     print_lines(output)
 
