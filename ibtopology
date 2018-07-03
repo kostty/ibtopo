@@ -51,15 +51,16 @@ def set_tier(switches, tier, tier_num=1):
     for guid in tier:
         switch = switches[guid]
         switch['tier'] = tier_num
-        for neigh in switch['switches']:
-            if switches[neigh]['tier'] == tier_num:
-                pass
+        #print('switch {} in tier {}'.format(guid_to_name(guid), tier_num))
+        #for neigh in switch['switches']:
+        #    if switches[neigh]['tier'] == tier_num:
+        #        pass
                 #print('Topology warning: switches {} and {} are '
                 #      'connected to each other, while seeming to be in the '
                 #      'same tier'.format(guid_to_name(guid),
                 #                          guid_to_name(neigh)))
-    next_tier = set([guid for guid in switches
-                     if not 'tier' in switches[guid]])
+        next_tier.update([guid for guid in switch['switches']
+                     if not switches[guid]['tier']])
 
     return next_tier, tier_num+1
 
@@ -78,8 +79,9 @@ def setup_guid_mapping(topo, gen_names, prefix):
     if gen_names:
         for i, (guid, info) in enumerate(sorted(topo.items(), key=lambda
             sw: len(sw[1]['hosts']), reverse=True)):
-            if not info['parent']:
-                guid_to_name_map[guid] = '{}{}'.format(prefix, i+1)
+            #if not info['parent']:
+            #    guid_to_name_map[guid] = '{}{}'.format(prefix, i+1)
+            guid_to_name_map[guid] = '{}{}'.format(prefix, i+1)
     else:
         for guid, info in topo.items():
             guid_to_name_map[guid] = info['name']
@@ -158,8 +160,8 @@ def count_links(dct, do_map):
 
 def collect_hostlist(lst, slurm):
     collect = hostlist.collect_hostlist(lst)
-    if slurm and collect[-1] != ']':
-        return ','.join(lst)
+    if slurm and collect and collect[-1] != ']':
+        return ','.join(sorted(lst))
     return collect
 
 #///////////////// Code
@@ -176,7 +178,7 @@ parser = argparse.ArgumentParser(description = '''`{}` parses `ibnetdiscover`
                           some other useful information'''.format(script_name))
 parser.add_argument('-f', '--input-file', metavar='PATH',
                     help='A file containing an output of `ibnetdiscover`')
-parser.add_argument('-d', '--dump', action='store_true',
+parser.add_argument('-D', '--dump', action='store_true',
                     help='Dump the internal structure in JSON')
 parser.add_argument('-n', '--nodes-only', action='store_true',
                     help='Only list connected nodes, not switches')
@@ -193,12 +195,13 @@ parser.add_argument('-O', '--omni-path', action='store_true',
                     help='The fabric is based on Intel\'s Omni-Path')
 parser.add_argument('-N', '--no-mapping', action='store_true',
                     help='Switch name mapping isn\'t needed, '
-                         'as it\'s probably has already been handled'
-                         'outside of the script')
+                    'as it\'s probably has already been handled'
+                    'outside of the script')
 parser.add_argument('-S', '--no-slurm', action='store_true',
                     help='Print not in Slurm format')
-parser.add_argument('--full', action='store_true',
-                    help='For topology.conf, list all switches')
+parser.add_argument('-d', '--director', action='store_true',
+                    help='''For topology.conf, expand links inside
+                    director switches''')
 args = parser.parse_args()
 args = vars(args)
 
@@ -208,7 +211,7 @@ nodes_only = args['nodes_only']
 omnipath = args['omni_path']
 do_mapping = not args['no_mapping']
 show_slurm = not args['no_slurm']
-show_full = args['full']
+expand_director = args['director']
 
 if input_file:
     try:
@@ -263,6 +266,16 @@ if omnipath:
                 guid = node['NodeGUID']
                 names = node['NodeDesc'].split()
                 ports = int(node['NumPorts'])
+                if names[1].startswith('L'):
+                    # Below, the 32 (and 16, that is a half of that) and 36
+                    # are assumptions on the number of ports in a module
+                    # that are based on the current Intel's director models.
+                    # Couldn't derive it from `opareport` report.
+                    switches[parent_guid]['ports'] += 16
+                    ports = 32
+                elif names[1].startswith('S'):
+                    ports = 36
+                switches[parent_guid]['name'] = names[0]
                 switches[guid] = {
                     'name': names[1],
                     'ports': ports,
@@ -272,12 +285,6 @@ if omnipath:
                     'switches': {},
                     'tier': None,
                     }
-                if names[1].startswith('L'):
-                    # Below, 16 is an assumption based on the current
-                    # Intel's director models. Couldn't derive it from
-                    # the XML.
-                    switches[parent_guid]['ports'] += 16
-                switches[parent_guid]['name'] = names[0]
         elif sys['Node']['NodeType'] == 'SW':
             guid = sys['Node']['NodeGUID']
             name = sys['Node']['NodeDesc']
@@ -294,7 +301,8 @@ if omnipath:
 
     for link in links:
         if int(link['Internal']):
-            continue
+            pass
+            #continue
         sw_guids = []
         for port in link['Port']:
             if port['NodeType'] == 'FI':
@@ -309,7 +317,7 @@ if omnipath:
                     }
             elif port['NodeType'] == 'SW':
                 guid = port['NodeGUID']
-                if switches[guid]['parent']:
+                if switches[guid]['parent'] and not expand_director:
                     sw_guids.append(switches[guid]['parent'])
                 else:
                     sw_guids.append(guid)
@@ -325,6 +333,8 @@ if omnipath:
         else:
             switchA = switches[sw_guids[0]]
             switchB = switches[sw_guids[1]]
+            if switchA == switchB:
+                continue
             if sw_guids[0] in switchB['switches']:
                 switchB['switches'][sw_guids[0]]['links'] += 1
             else:
@@ -392,7 +402,8 @@ if args['dump']:
     print(json.dumps(switches, indent=4))
 else:
     output = []
-    switches = {k: v for k, v in switches.items() if not v['parent']}
+    #switches = {k: v for k, v in switches.items()
+    #        if expand_director or (not (v['parent'] or expand_director))}
 
     for guid, info in sorted(switches.items(), key=lambda sw:
             len(sw[1]['hosts']), reverse=True):
@@ -402,8 +413,9 @@ else:
         link_str = []
         out_list = []
 
-        if info['parent']:
-            continue
+        #if info['parent']:
+        #    pass
+            #continue
 
         switch = '{}'.format(guid_to_name(guid))
         nodes = [ n['name'] for n in info['hosts'].values() ]
@@ -411,13 +423,16 @@ else:
             nodes = collect_hostlist(nodes, show_slurm)
         out_list.append(('SwitchName', switch))
         n_links = sum([n['links'] for n in info['hosts'].values()])
-        sw_links = sum([s['links'] for s in info['switches'].values()])
+        isl = ['{}'.format(guid_to_name(x)) for x in info['switches']
+                if switches[x]['tier'] < info['tier']]
         if n_links:
             out_list.append(('Nodes', nodes))
-        else:
-            isl = ['{}'.format(guid_to_name(x)) for x in info['switches']]
+        elif isl:
             isl = collect_hostlist(isl, show_slurm)
             out_list.append(('Switches', isl))
+        else:
+            continue
+        sw_links = sum([s['links'] for s in info['switches'].values()])
         free_ports = info['ports'] - (n_links + sw_links)
         comment.append(('Free ports', str(free_ports)))
         if n_links:
@@ -435,11 +450,12 @@ else:
         node_links = [(name, str(cnt)) for cnt, name in
                 count_links(info['hosts'], do_map=False).items()]
         if not show_slurm:
-            link_info = [('Switches', switch_links), ('Hosts', node_links)]
+            if node_links:
+                link_info = [('Switches', switch_links), ('Hosts', node_links)]
             output.append(
                     join_items([(switch, link_info)], sep1=': ', sep2=', '))
         else:
-            output.append('{}\t\t# {}'.format(join_items(out_list,'=','\t'),
+            output.append('{}\t# {}'.format(join_items(out_list,'=','\t'),
                                             join_items(comment,': ',', ')))
 
     print_lines(output)
