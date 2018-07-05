@@ -38,7 +38,9 @@ class Fabric():
 
 #///////////////// Functions
 
-def assign_tiers(switches):
+def assign_tiers(switches, known_tiers):
+    for guid, tier_num in known_tiers.items():
+        switches[guid]['tier'] = tier_num
     start_tier = [guid for guid in switches if len(switches[guid]['hosts'])]
     next_tier, next_num = set_tier(switches, start_tier, tier_num=1)
     while next_tier:
@@ -76,20 +78,28 @@ def setup_guid_mapping(topo, gen_names, prefix):
     '''
 
     guid_to_name_map = {}
+    name_to_guid_map = {}
     if gen_names:
         for i, (guid, info) in enumerate(sorted(topo.items(), key=lambda
             sw: len(sw[1]['hosts']), reverse=True)):
             #if not info['parent']:
             #    guid_to_name_map[guid] = '{}{}'.format(prefix, i+1)
-            guid_to_name_map[guid] = '{}{}'.format(prefix, i+1)
+            name = '{}{}'.format(prefix, i+1)
+            guid_to_name_map[guid] = name
+            name_to_guid_map[name] = guid
     else:
         for guid, info in topo.items():
-            guid_to_name_map[guid] = info['name']
+            name = info['name']
+            guid_to_name_map[guid] = name
+            name_to_guid_map[name] = guid
 
     def guid_to_name(guid):
         return guid_to_name_map[guid]
 
-    return guid_to_name
+    def name_to_guid(name):
+        return name_to_guid_map[name]
+
+    return guid_to_name, name_to_guid
 
 def print_lines(lines):
     for line in lines:
@@ -164,6 +174,28 @@ def collect_hostlist(lst, slurm):
         return ','.join(sorted(lst))
     return collect
 
+def parse_tier_line(line):
+    '''Parses a string in the following format:
+    <switch_list>:<tier_num>[,<switch_list>:<tier_num>...]
+    where the `switch_list` is a hostlist-parseable string,
+    and produces the a dictionary that maps each switch to its tier
+    number'''
+
+    tiers = {}
+    groups = line.split(';')
+    for group in groups:
+        try:
+            parts = group.split(':')
+            switch_lst = parts[0]
+            tier_num = parts[1]
+            for switch in hostlist.expand_hostlist(parts[0]):
+                tiers[name_to_guid(switch)] = int(parts[1])
+        except (ValueError, IndexError, hostlist.BadHostlist) as e:
+            print('Wrong tier specification in line `{}`, skipping...'.format(group))
+            continue
+
+    return tiers
+
 #///////////////// Code
 
 switches = {}
@@ -173,7 +205,8 @@ tier_names = [['Switch'], ['Edge', 'Core'], ['Edge', 'Leaf', 'Spine']]
 topo_cmd = (['/usr/sbin/ibnetdiscover',],
             ['/usr/sbin/opareport', '-o', 'comps', '-o', 'links', '-x'])
 
-parser = argparse.ArgumentParser(description = '''`{}` parses `ibnetdiscover`
+parser = argparse.ArgumentParser(description = '''
+                          `{}` parses `ibnetdiscover` (or `opareport`)
                           output to generate a Slurm topology file and extract
                           some other useful information'''.format(script_name))
 parser.add_argument('-f', '--input-file', metavar='PATH',
@@ -202,6 +235,11 @@ parser.add_argument('-S', '--no-slurm', action='store_true',
 parser.add_argument('-d', '--director', action='store_true',
                     help='''For topology.conf, expand links inside
                     director switches''')
+parser.add_argument('--set-tier', help='''Manually set tiers for a group
+                    of switches by using the following format:
+                    <switch_list>:<tier_num>[,<switch_list>:<tier_num>...]
+                    where `<switch_list>` is a hostlist-parseable list
+                    of switch names, and `<tier_num>` is a number''', default='')
 args = parser.parse_args()
 args = vars(args)
 
@@ -212,6 +250,7 @@ omnipath = args['omni_path']
 do_mapping = not args['no_mapping']
 show_slurm = not args['no_slurm']
 expand_director = args['director']
+manual_tiers = args['set_tier']
 
 if input_file:
     try:
@@ -222,7 +261,6 @@ if input_file:
     topo_file = f.read()
     f.close()
 else:
-
     if omnipath:
         cmd = topo_cmd[1]
     else:
@@ -393,10 +431,11 @@ else:
         else:
             in_switch = False
 
-guid_to_name = setup_guid_mapping(topo=switches,
-                                      gen_names=do_mapping,
-                                      prefix=prefix)
-top_tier = assign_tiers(switches)
+guid_to_name, name_to_guid = setup_guid_mapping(topo=switches,
+                                                gen_names=do_mapping,
+                                                prefix=prefix)
+known_tiers = parse_tier_line(manual_tiers)
+top_tier = assign_tiers(switches, known_tiers)
 
 if args['dump']:
     print(json.dumps(switches, indent=4))
